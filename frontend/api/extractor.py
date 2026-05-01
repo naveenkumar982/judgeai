@@ -4,7 +4,8 @@ import json
 import os
 import re
 
-import fitz  # PyMuPDF
+import io
+from pdfminer.high_level import extract_text as miner_extract_text
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -39,20 +40,23 @@ Return ONLY valid JSON. No explanation. Format:
 
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    """Use PyMuPDF to pull all text from a PDF byte stream.
+    """Use pdfminer.six to pull all text from a PDF byte stream.
 
     Raises ValueError if no extractable text is found (scanned PDF).
     """
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    full_text = ""
-    for page in doc:
-        full_text += page.get_text()
-    doc.close()
-
-    cleaned = full_text.strip()
-    if not cleaned:
-        raise ValueError("scanned PDF - manual entry needed")
-    return cleaned
+    try:
+        # Create a file-like object from bytes
+        fp = io.BytesIO(pdf_bytes)
+        text = miner_extract_text(fp)
+        cleaned = text.strip()
+        
+        if not cleaned:
+            raise ValueError("scanned PDF - manual entry needed")
+        return cleaned
+    except Exception as e:
+        if isinstance(e, ValueError):
+            raise e
+        raise RuntimeError(f"PDF extraction error: {str(e)}")
 
 
 def extract_with_gemini(text: str) -> dict:
@@ -62,7 +66,7 @@ def extract_with_gemini(text: str) -> dict:
         raise RuntimeError("GEMINI_API_KEY not set in environment")
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt = f"{GEMINI_PROMPT}\n\n--- DOCUMENT TEXT ---\n{text}"
     response = model.generate_content(prompt)

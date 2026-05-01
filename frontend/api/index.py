@@ -59,18 +59,19 @@ async def extract(file: UploadFile = File(...)):
     # Step 1: pull raw text from PDF
     try:
         text = extract_text_from_pdf(pdf_bytes)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"PDF Text Extraction Failed: {str(exc)} (Type: {type(exc).__name__})"
+        )
 
     # Step 2: send to Gemini for structured extraction
     try:
         result = extract_with_gemini(text)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Gemini extraction failed: {exc}",
+            detail=f"Gemini Extraction Failed: {str(exc)} (Type: {type(exc).__name__})"
         )
 
     return result
