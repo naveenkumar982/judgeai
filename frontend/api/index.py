@@ -1,21 +1,13 @@
-"""JudgeAI — FastAPI backend for court order PDF extraction & tracking."""
-
 import json
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from database import (
-    get_all_action_plans,
-    get_audit_log,
-    init_db,
-    insert_action_plan,
-    insert_audit_log,
-)
-from extractor import extract_text_from_pdf, extract_with_gemini
-from models import ApproveRequest, ApproveResponse, AuditEntry, AuditLogResponse
-
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Application lifespan — initialise DB on startup
@@ -23,7 +15,11 @@ from models import ApproveRequest, ApproveResponse, AuditEntry, AuditLogResponse
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    try:
+        from database import init_db
+        init_db()
+    except Exception as e:
+        logger.error(f"Database init failed: {e}")
     yield
 
 
@@ -33,6 +29,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "message": "JudgeAI API is running"}
+
 
 # CORS — allow the Vite frontend dev server
 app.add_middleware(
@@ -51,6 +52,8 @@ app.add_middleware(
 @app.post("/api/extract", summary="Extract data from a court order PDF")
 async def extract(file: UploadFile = File(...)):
     """Upload a court order PDF → get AI-extracted structured data."""
+    from extractor import extract_text_from_pdf, extract_with_gemini
+    
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
 
@@ -81,9 +84,21 @@ async def extract(file: UploadFile = File(...)):
 # ENDPOINT 2 — POST /approve
 # ---------------------------------------------------------------------------
 
-@app.post("/api/approve", response_model=ApproveResponse, summary="Approve extracted data")
-async def approve(req: ApproveRequest):
+@app.post("/api/approve", summary="Approve extracted data")
+async def approve(req_dict: dict):
     """Human reviewer approves (and optionally edits) extracted data."""
+    from database import insert_action_plan, insert_audit_log
+    
+    # We use dict instead of pydantic model for extreme safety in case models.py fails to load
+    # but let's try to load the model if possible
+    try:
+        from models import ApproveRequest
+        req = ApproveRequest(**req_dict)
+    except Exception as e:
+        logger.error(f"Pydantic validation failed: {e}")
+        # fallback or raise
+        raise HTTPException(status_code=422, detail=f"Validation Error: {e}")
+
     # Save the approved record
     record_id = insert_action_plan(
         case_number=req.case_number,
@@ -141,6 +156,7 @@ async def approve(req: ApproveRequest):
 @app.get("/api/dashboard", summary="Get all approved action plans")
 async def dashboard():
     """Return all action plans sorted by deadline (soonest first)."""
+    from database import get_all_action_plans
     return get_all_action_plans()
 
 
@@ -148,10 +164,11 @@ async def dashboard():
 # ENDPOINT 4 — GET /audit/{case_number}
 # ---------------------------------------------------------------------------
 
-@app.get("/api/audit/{case_number:path}", response_model=AuditLogResponse,
-         summary="Get audit log for a case")
+@app.get("/api/audit/{case_number:path}", summary="Get audit log for a case")
 async def audit(case_number: str):
     """Return the AI-vs-human audit trail for a specific case."""
+    from database import get_audit_log
+    from models import AuditEntry, AuditLogResponse
     rows = get_audit_log(case_number)
     if not rows:
         raise HTTPException(status_code=404, detail="No audit log found for this case.")

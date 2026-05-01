@@ -7,24 +7,33 @@ import os
 from google.cloud import firestore
 from google.oauth2 import service_account
 
-# Initialize Firestore client
-key_path = os.path.join(os.path.dirname(__file__), "service-account.json")
-if os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON"):
-    # Load from environment variable string (useful for Vercel)
-    creds_dict = json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT_JSON"])
-    credentials = service_account.Credentials.from_service_account_info(creds_dict)
-    db = firestore.Client(project=creds_dict["project_id"], credentials=credentials, database="(default)")
-elif os.path.exists(key_path):
-    # Load from local file
-    credentials = service_account.Credentials.from_service_account_file(key_path)
-    db = firestore.Client(project="judgeai-db-12345", credentials=credentials, database="(default)")
-else:
-    # Fallback to default credentials
-    db = firestore.Client(project="judgeai-db-12345", database="(default)")
+_db = None
+
+def get_db():
+    global _db
+    if _db is not None:
+        return _db
+        
+    # Initialize Firestore client
+    key_path = os.path.join(os.path.dirname(__file__), "service-account.json")
+    if os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON"):
+        # Load from environment variable string (useful for Vercel)
+        creds_dict = json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT_JSON"])
+        credentials = service_account.Credentials.from_service_account_info(creds_dict)
+        _db = firestore.Client(project=creds_dict["project_id"], credentials=credentials, database="(default)")
+    elif os.path.exists(key_path):
+        # Load from local file
+        credentials = service_account.Credentials.from_service_account_file(key_path)
+        _db = firestore.Client(project="judgeai-db-12345", credentials=credentials, database="(default)")
+    else:
+        # Fallback to default credentials
+        _db = firestore.Client(project="judgeai-db-12345", database="(default)")
+    return _db
 
 
 def init_db():
     """No-op for Firestore, collections are created implicitly."""
+    get_db()
     pass
 
 
@@ -45,7 +54,7 @@ def insert_action_plan(
     """Insert a human-approved action plan. Returns the new document ID."""
     now = datetime.now(timezone.utc).isoformat()
     
-    doc_ref = db.collection("action_plans").document()
+    doc_ref = get_db().collection("action_plans").document()
     doc_ref.set({
         "case_number": case_number,
         "date": date,
@@ -72,7 +81,7 @@ def insert_audit_log(
     fields = ["case_number", "date", "petitioner", "respondent",
               "directions", "deadline", "department"]
               
-    batch = db.batch()
+    batch = get_db().batch()
     
     for field in fields:
         ai_val = ai_values.get(field, "")
@@ -86,7 +95,7 @@ def insert_audit_log(
             
         changed = 1 if str(ai_val) != str(human_val) else 0
         
-        doc_ref = db.collection("audit_log").document()
+        doc_ref = get_db().collection("audit_log").document()
         batch.set(doc_ref, {
             "case_number": case_number,
             "field_name": field,
@@ -102,7 +111,7 @@ def insert_audit_log(
 
 def get_all_action_plans() -> list[dict]:
     """Return all action plans sorted by deadline ascending."""
-    docs = db.collection("action_plans").order_by(
+    docs = get_db().collection("action_plans").order_by(
         "deadline", direction=firestore.Query.ASCENDING
     ).stream()
     
@@ -117,7 +126,7 @@ def get_all_action_plans() -> list[dict]:
 
 def get_audit_log(case_number: str) -> list[dict]:
     """Return audit entries for a specific case number."""
-    docs = db.collection("audit_log").where(
+    docs = get_db().collection("audit_log").where(
         "case_number", "==", case_number
     ).order_by("approved_at", direction=firestore.Query.ASCENDING).stream()
     
